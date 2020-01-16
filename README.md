@@ -49,6 +49,118 @@ minio/minio:latest server /export
 ```
 > Note: For debugging and testing. You can expose the port of Minio with docker service update minio --publish-add 9000:9000, but this is not recommended on the public internet.
 
+
+#### Deploy Minio with Nomad and OpenFaaS
+
+if `MINIO_SECRET_KEY_FILE` and `MINIO_ACCESS_KEY_FILE` not configured
+```
+Detected default credentials 'minioadmin:minioadmin', please change the credentials immediately using 'MINIO_ACCESS_KEY' and 'MINIO_SECRET_KEY'
+```
+
+* Create secrets with OpenFaaS
+
+```bash
+echo -n "$SECRET_KEY" | faas-cli secret create s3-secret-key -g http://$IP_ADDRESS:8080
+echo -n "$ACCESS_KEY" | faas-cli secret create s3-access-key -g http://$IP_ADDRESS:8080
+```
+
+* Deploy Minio with Nomad
+
+```
+nomad run minio.hcl
+```
+
+minio.hcl for example
+
+```hcl
+job "minio" {
+  datacenters = ["dc1"]
+
+  type = "service"
+
+  constraint {
+    attribute = "${attr.cpu.arch}"
+    operator  = "="
+    value     = "amd64"
+  }
+
+  group "faas-datastore" {
+    count = 1
+
+    restart {
+      attempts = 10
+      interval = "5m"
+      delay    = "25s"
+      mode     = "delay"
+    }
+
+    task "minio" {
+      driver = "docker"
+
+      config {
+        image = "minio/minio"
+
+        port_map {
+          minio = 9000
+        }
+
+        args = [
+          "server",
+          "/data",
+        ]
+
+        volumes = [
+          "/root/minio/data:/data",
+        ]
+      }
+
+      // TODO: use Vault for secret management
+//       template {
+//         destination   = "secrets/s3-secret-key"
+//         data = <<EOH
+// minioadmin
+// EOH
+//       }
+//       template {
+//         destination   = "secrets/s3-access-key"
+//         data = <<EOH
+// minioadmin
+// EOH
+//       }
+
+      template {
+        env = true
+        destination   = "secrets/minio.env"
+
+        data = <<EOH
+MINIO_SECRET_KEY=minioadmin
+MINIO_ACCESS_KEY=minioadmin
+EOH
+      }
+
+      resources {
+        cpu    = 500 # 500 MHz
+        memory = 128 # 128MB
+
+        network {
+          mbits = 10
+
+          port "minio" {
+            static = 9000
+          }
+        }
+      }
+
+      service {
+        port = "minio"
+        name = "faas-datastore"
+        tags = ["faas-datastore"]
+      }
+    }
+  }
+}
+```
+
 ### Use Minio dataStore in `faasflow`
 * Set the `stack.yml` with the necessary environments
 ```yaml
